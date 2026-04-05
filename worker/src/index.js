@@ -30,7 +30,7 @@ const SYSTEM_PROMPT_PREFIX = "You are jit, an AI environment setup assistant.";
 const ALLOWED_TOOLS = new Set([
   "scan_project", "read_file", "list_files", "check_tool",
   "get_platform", "run_command", "write_env", "create_venv",
-  "install_deps", "verify_setup",
+  "install_deps", "verify_setup", "prompt_choice",
 ]);
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

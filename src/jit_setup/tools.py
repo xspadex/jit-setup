@@ -180,6 +180,34 @@ TOOLS_OPENAI = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "prompt_choice",
+            "description": "Present the user with numbered choices. Use this instead of asking "
+                           "open-ended questions. The user selects by pressing a number key. "
+                           "Returns the chosen option text.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Short question, e.g. 'Python isolation method'",
+                    },
+                    "options": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of choices, e.g. ['venv', 'conda', 'uv']",
+                    },
+                    "default": {
+                        "type": "integer",
+                        "description": "Default option index (1-based), highlighted for Enter",
+                    },
+                },
+                "required": ["title", "options"],
+            },
+        },
+    },
 ]
 
 # ── Security Policy ──────────────────────────────────────────────────────────
@@ -267,14 +295,20 @@ def _in_venv(project_dir: Path) -> bool:
 
 _C_DIM = "\033[2m"
 _C_RESET = "\033[0m"
+_C_GREEN = "\033[32m"
+_C_RED = "\033[31m"
+_ERASE_LINE = "\r\033[K"
+
+# Buffer for last command's full output — viewable via Ctrl+O in REPL
+last_command_output: dict = {"cmd": "", "lines": []}
 
 
 def _run_cmd(cmd: str, cwd: Path, timeout: int = 120, env: dict = None,
              stream: bool = False) -> dict:
     """Execute a command and return structured result.
 
-    If stream=True, output is printed to the terminal in real-time (dimmed)
-    so the user can see progress.
+    If stream=True, shows a compact rolling status line instead of full output.
+    Full output is buffered in `last_command_output` for Ctrl+O viewing.
     """
     merged_env = dict(os.environ)
     if env:
@@ -294,38 +328,61 @@ def _run_cmd(cmd: str, cwd: Path, timeout: int = 120, env: dict = None,
                 capture_output=True, text=True,
                 timeout=timeout, env=merged_env,
             )
-            result = {
+            return {
                 "exit_code": proc.returncode,
                 "stdout": proc.stdout[-3000:] if len(proc.stdout) > 3000 else proc.stdout,
                 "stderr": proc.stderr[-2000:] if len(proc.stderr) > 2000 else proc.stderr,
                 "success": proc.returncode == 0,
             }
-            return result
         except subprocess.TimeoutExpired:
             return {"success": False, "error": f"Command timed out after {timeout}s"}
         except Exception as e:
             return {"success": False, "error": str(e)[:500]}
 
-    # Streaming mode: show output in real-time
-    stdout_lines: list[str] = []
-    stderr_lines: list[str] = []
+    # Streaming mode: compact rolling status line
+    all_lines: list[str] = []
+    import time
+    start = time.monotonic()
+
     try:
         proc = subprocess.Popen(
             cmd, shell=True, cwd=str(cwd),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, env=merged_env,
         )
+        # Show command
         print(f"{_C_DIM}  $ {cmd}{_C_RESET}")
+
+        # Rolling single-line status
         for line in proc.stdout:
             stripped = line.rstrip("\n")
-            stdout_lines.append(stripped)
-            # Show last meaningful lines, skip blanks
             if stripped:
-                print(f"{_C_DIM}    {stripped}{_C_RESET}")
-            sys.stdout.flush()
-        proc.wait(timeout=timeout)
+                all_lines.append(stripped)
+                # Truncate long lines for display
+                display = stripped[:60] + "…" if len(stripped) > 60 else stripped
+                sys.stdout.write(
+                    f"{_ERASE_LINE}{_C_DIM}    [{len(all_lines)}] {display}{_C_RESET}"
+                )
+                sys.stdout.flush()
 
-        stdout_text = "\n".join(stdout_lines)
+        proc.wait(timeout=timeout)
+        elapsed = time.monotonic() - start
+
+        # Clear the rolling line, print summary
+        sys.stdout.write(_ERASE_LINE)
+        if proc.returncode == 0:
+            print(f"{_C_DIM}    ✓ Done ({len(all_lines)} lines, {elapsed:.1f}s){_C_RESET}")
+        else:
+            # Show last few lines on failure so user sees the error
+            print(f"{_C_DIM}    ✗ Failed (exit {proc.returncode}, {len(all_lines)} lines){_C_RESET}")
+            for err_line in all_lines[-5:]:
+                print(f"{_C_DIM}    {err_line}{_C_RESET}")
+
+        # Buffer full output for Ctrl+O
+        last_command_output["cmd"] = cmd
+        last_command_output["lines"] = all_lines
+
+        stdout_text = "\n".join(all_lines)
         return {
             "exit_code": proc.returncode,
             "stdout": stdout_text[-3000:] if len(stdout_text) > 3000 else stdout_text,
@@ -334,8 +391,10 @@ def _run_cmd(cmd: str, cwd: Path, timeout: int = 120, env: dict = None,
         }
     except subprocess.TimeoutExpired:
         proc.kill()
+        sys.stdout.write(_ERASE_LINE)
         return {"success": False, "error": f"Command timed out after {timeout}s"}
     except Exception as e:
+        sys.stdout.write(_ERASE_LINE)
         return {"success": False, "error": str(e)[:500]}
 
 
@@ -419,6 +478,12 @@ def exec_tool(name: str, args: dict, project_dir: Path,
         result = _run_cmd(cmd, project_dir, timeout=60, stream=True)
         result["verification"] = True
         return json.dumps(result, ensure_ascii=False)
+
+    if name == "prompt_choice":
+        title = args.get("title", "Choose")
+        options = args.get("options", [])
+        default = args.get("default", 1)
+        return _exec_prompt_choice(title, options, default)
 
     return json.dumps({"error": f"Unknown tool: {name}"})
 
@@ -672,3 +737,47 @@ def _list_dir(target: Path, project_root: Path, prefix: str = "",
                                      current_depth=current_depth + 1))
 
     return entries
+
+
+def _exec_prompt_choice(title: str, options: list[str], default: int = 1) -> str:
+    """Show numbered choices, return the selected option."""
+    if not options:
+        return json.dumps({"error": "No options provided"})
+
+    default = max(1, min(default, len(options)))
+
+    print(f"\n  \033[1m{title}\033[0m")
+    for i, opt in enumerate(options, 1):
+        marker = "›" if i == default else " "
+        bold = "\033[1m" if i == default else ""
+        print(f"  {_C_DIM}{marker}{_C_RESET} {bold}{i}. {opt}{_C_RESET}")
+
+    try:
+        raw = input(f"  \033[2mChoose [default {default}]:\033[0m ").strip()
+    except (EOFError, KeyboardInterrupt):
+        raw = ""
+
+    if not raw:
+        choice = default
+    else:
+        try:
+            choice = int(raw)
+            if choice < 1 or choice > len(options):
+                choice = default
+        except ValueError:
+            choice = default
+
+    selected = options[choice - 1]
+    print(f"  {_C_DIM}→ {selected}{_C_RESET}")
+    return json.dumps({"selected": selected, "index": choice})
+
+
+def show_full_output():
+    """Print the full output of the last streamed command (for Ctrl+O)."""
+    if not last_command_output["lines"]:
+        print(f"{_C_DIM}  No command output to show.{_C_RESET}")
+        return
+    print(f"{_C_DIM}  ── $ {last_command_output['cmd']} ──{_C_RESET}")
+    for line in last_command_output["lines"]:
+        print(f"{_C_DIM}  {line}{_C_RESET}")
+    print(f"{_C_DIM}  ── {len(last_command_output['lines'])} lines ──{_C_RESET}")

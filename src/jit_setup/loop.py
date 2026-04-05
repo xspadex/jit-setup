@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .config import load_config, get_device_id
 from .llm import call_llm, get_llm_config, to_openai_messages, ToolCall, RateLimitError
-from .tools import TOOLS_OPENAI, exec_tool
+from .tools import TOOLS_OPENAI, exec_tool, show_full_output
 from .ui import (
     Spinner, print_banner, show_user_bubble, TOOL_VERBS,
     C_BOLD, C_DIM, C_RED, C_YELLOW, C_GREEN, C_RESET, REPL_PROMPT,
@@ -44,6 +44,10 @@ Rules:
 - For system-level installs (brew, apt, etc.), the run_command tool will ask \
 the user for confirmation — just call it normally.
 - Respond in the same language the user uses.
+- IMPORTANT: When you need user input, use the prompt_choice tool to present \
+numbered options. NEVER ask open-ended questions. The user should only need to \
+press a number or Enter, not type sentences. Example: instead of asking \
+"Which isolation method do you prefer?", call prompt_choice with options.
 - When all steps are done, output a short "ready to go" block with the exact \
 commands to activate the env and start working, then stop.
 """
@@ -90,6 +94,10 @@ def run(project_dir: Path, auto_confirm: bool = False):
             is_community=cfg.get("is_community", False),
         )
 
+    # ── Token tracking ──────────────────────────────────────────────────────
+    total_in = 0
+    total_out = 0
+
     # ── Conversation loop ────────────────────────────────────────────────────
     while True:
         # ── LLM turn ────────────────────────────────────────────────────────
@@ -105,7 +113,7 @@ def run(project_dir: Path, auto_confirm: bool = False):
                 sys.stdout.flush()
 
             try:
-                text, tool_calls, _ = _call(messages, stream_cb=_stream_cb)
+                text, tool_calls, usage = _call(messages, stream_cb=_stream_cb)
             except RateLimitError as e:
                 spin.fail("Rate limit")
                 print(f"\n{C_YELLOW}  {e}{C_RESET}")
@@ -119,6 +127,17 @@ def run(project_dir: Path, auto_confirm: bool = False):
                 spin.finish("jit")
             if text:
                 print()   # newline after streamed text
+
+            # Track tokens
+            u_in = usage.get("input_tokens", 0)
+            u_out = usage.get("output_tokens", 0)
+            total_in += u_in
+            total_out += u_out
+            if (u_in or u_out) and not tool_calls:
+                # Show token usage after final text response (not mid-tool-loop)
+                def _fmt(n):
+                    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+                print(f"{C_DIM}  tokens: {_fmt(u_in)}↑ {_fmt(u_out)}↓ · total: {_fmt(total_in)}↑ {_fmt(total_out)}↓{C_RESET}")
 
             # Build assistant message
             assistant_content: list = []
@@ -186,6 +205,9 @@ def run(project_dir: Path, auto_confirm: bool = False):
             messages.append({"role": "user",
                              "content": "Skip this step and move on to the next one."})
             show_user_bubble("skip")
+            continue
+        if user_input in ("/output", "/o"):
+            show_full_output()
             continue
 
         # Display user input as bubble

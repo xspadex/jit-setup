@@ -40,7 +40,7 @@ def print_banner():
         print(f"{C_CYAN}{C_BOLD}{line}{C_RESET}")
     print()
     print(f"{C_BOLD}jit{C_RESET} — AI-powered environment setup  "
-          f"{C_DIM}type /skip to skip · /quit to exit{C_RESET}")
+          f"{C_DIM}/skip · /o output · /quit{C_RESET}")
     print(f"{C_DIM}{'─' * _terminal_width()}{C_RESET}", flush=True)
     print()
 
@@ -135,14 +135,15 @@ def print_tree(label: str, items: list[tuple[str, str]]):
 
 # Tool verb labels for spinner messages
 TOOL_VERBS = {
-    "scan_project":  "Scanning project",
-    "read_file":     "Reading file",
-    "list_files":    "Listing files",
-    "check_tool":    "Checking tool",
-    "get_platform":  "Checking platform",
-    "run_command":   "Running command",
-    "write_env":     "Writing .env",
-    "create_venv":   "Creating virtual environment",
-    "install_deps":  "Installing dependencies",
-    "verify_setup":  "Verifying setup",
+    "scan_project":   "Scanning project",
+    "read_file":      "Reading file",
+    "list_files":     "Listing files",
+    "check_tool":     "Checking tool",
+    "get_platform":   "Checking platform",
+    "run_command":    "Running command",
+    "write_env":      "Writing .env",
+    "create_venv":    "Creating virtual environment",
+    "install_deps":   "Installing dependencies",
+    "verify_setup":   "Verifying setup",
+    "prompt_choice":  "Waiting for choice",
 }
