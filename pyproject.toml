@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jit-setup"
+version = "0.1.1"
+description = "AI-powered project environment setup — scan, configure, verify, done."
+license = "Apache-2.0"
+requires-python = ">=3.9"
+readme = "README.md"
+authors = [{ name = "jit-setup contributors" }]
+keywords = ["setup", "environment", "ai", "agent", "cli", "devtools"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: System :: Installation/Setup",
+]
+
+[project.urls]
+Homepage = "https://github.com/xspadex/jit-setup"
+Repository = "https://github.com/xspadex/jit-setup"
+Issues = "https://github.com/xspadex/jit-setup/issues"
+
+[project.scripts]
+jit = "jit_setup.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
