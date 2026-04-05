@@ -10,6 +10,7 @@ from .llm import call_llm, get_llm_config, to_openai_messages, ToolCall, RateLim
 from .tools import TOOLS_OPENAI, exec_tool, show_full_output
 from .ui import (
     Spinner, MarkdownStream, print_banner, show_user_bubble, TOOL_VERBS,
+    set_locale,
     C_BOLD, C_DIM, C_RED, C_YELLOW, C_GREEN, C_RESET, REPL_PROMPT,
 )
 
@@ -37,13 +38,12 @@ config files, what's needed.
 5. Handle .env variables — ask the user for secrets one at a time, validate \
 when possible.
 6. Run a final verification (build/test) to confirm everything works.
-7. IMPORTANT — When setup is complete, you MUST output a "Ready" summary block \
-that includes:
-   - A one-line status: "Environment is ready."
-   - The available project commands (e.g. dev server, test, build, lint) \
-as copy-pasteable shell commands, one per line.
-   - If a virtual env was created, show the activate command.
-   - Keep it short: just the commands, no extra explanation.
+7. IMPORTANT — When setup is complete:
+   a. Output a brief "Ready" summary: one-line status + available commands.
+   b. Then IMMEDIATELY call prompt_choice with the available project actions \
+as options (e.g. "Run dev server: bun run dev", "Run tests: bun run test", \
+"Exit"). ALWAYS include "Exit" as the last option. \
+This lets the user pick what to do next without typing.
 
 Rules:
 - Be concise. One step at a time. Don't over-explain.
@@ -140,13 +140,16 @@ def run(project_dir: Path, auto_confirm: bool = False):
     llm_cfg = get_llm_config(user_config)
     device_id = get_device_id()
 
+    _zh = lang == "zh"
     if llm_cfg.get("is_community"):
-        print(f"{C_DIM}  Using free community API (30 requests/day){C_RESET}")
+        print(f"{C_DIM}  {'使用免费社区 API（每天 30 次）' if _zh else 'Using free community API (30 requests/day)'}{C_RESET}")
     else:
-        print(f"{C_DIM}  Using custom LLM: {llm_cfg.get('model', 'default')}{C_RESET}")
-    print(f"{C_DIM}  Project: {project_dir}{C_RESET}\n")
+        print(f"{C_DIM}  {'使用自定义 LLM: ' if _zh else 'Using custom LLM: '}{llm_cfg.get('model', 'default')}{C_RESET}")
+    print(f"{C_DIM}  {'项目: ' if _zh else 'Project: '}{project_dir}{C_RESET}\n")
 
     # Build system prompt (with auto-detected language)
+    lang = _detect_language()
+    set_locale(lang)
     system_prompt = _build_system_prompt()
 
     # Check for existing session
@@ -156,8 +159,12 @@ def run(project_dir: Path, auto_confirm: bool = False):
         messages, meta = session
         total_in = meta.get("total_in", 0)
         total_out = meta.get("total_out", 0)
-        print(f"{C_DIM}  Resuming previous session ({len(messages)} messages){C_RESET}")
-        print(f"{C_DIM}  Type /reset to start over{C_RESET}\n")
+        if _zh:
+            print(f"{C_DIM}  恢复上次会话（{len(messages)} 条消息）{C_RESET}")
+            print(f"{C_DIM}  输入 /reset 重新开始{C_RESET}\n")
+        else:
+            print(f"{C_DIM}  Resuming previous session ({len(messages)} messages){C_RESET}")
+            print(f"{C_DIM}  Type /reset to start over{C_RESET}\n")
         # Jump straight to user input — don't re-run LLM
         resumed = True
     else:
@@ -198,9 +205,12 @@ def run(project_dir: Path, auto_confirm: bool = False):
                 text_buf = []  # collect raw text
 
                 def _stream_cb(chunk, _s=spin, _b=text_buf):
-                    if not _b:
-                        _s.erase()   # clear spinner silently
                     _b.append(chunk)
+                    # Update spinner with live thinking preview
+                    preview = "".join(_b).replace("\n", " ").strip()
+                    if preview:
+                        display = preview[-60:] if len(preview) > 60 else preview
+                        _s.update(display)
 
                 try:
                     text, tool_calls, usage = _call(messages, stream_cb=_stream_cb)
@@ -220,16 +230,11 @@ def run(project_dir: Path, auto_confirm: bool = False):
                 total_out += u_out
 
                 if text and tool_calls:
-                    # Mid-loop thinking — show as dim one-liner, then erase
+                    # Mid-loop thinking — erase spinner, done
                     spin.erase()
-                    preview = text.replace("\n", " ").strip()[:80]
-                    sys.stdout.write(f"{_ERASE_LINE}{C_DIM}  {preview}…{C_RESET}")
-                    sys.stdout.flush()
                 elif text and not tool_calls:
                     # Final response — render with markdown
                     spin.erase()
-                    # Erase any previous dim preview
-                    sys.stdout.write(_ERASE_LINE)
                     md = MarkdownStream()
                     md.feed(text)
                     md.flush()
@@ -300,13 +305,13 @@ def run(project_dir: Path, auto_confirm: bool = False):
         try:
             user_input = input(REPL_PROMPT).strip()
         except (EOFError, KeyboardInterrupt):
-            print(f"\n{C_DIM}Setup exited.{C_RESET}")
+            print(f"\n{C_DIM}{'已退出。' if _zh else 'Setup exited.'}{C_RESET}")
             break
 
         if not user_input:
             continue
         if user_input in ("/quit", "/exit", "/q"):
-            print(f"{C_DIM}Setup exited.{C_RESET}")
+            print(f"{C_DIM}{'已退出。' if _zh else 'Setup exited.'}{C_RESET}")
             break
         if user_input == "/skip":
             messages.append({"role": "user",
@@ -318,7 +323,10 @@ def run(project_dir: Path, auto_confirm: bool = False):
             continue
         if user_input == "/reset":
             _clear_session(project_dir)
-            print(f"{C_DIM}Session cleared. Restart jit to begin fresh.{C_RESET}")
+            if _zh:
+                print(f"{C_DIM}会话已清除，重新运行 jit 开始。{C_RESET}")
+            else:
+                print(f"{C_DIM}Session cleared. Restart jit to begin fresh.{C_RESET}")
             break
 
         # Display user input as bubble

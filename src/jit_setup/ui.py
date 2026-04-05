@@ -205,7 +205,7 @@ class MarkdownStream:
 
 
 # Tool verb labels for spinner messages
-TOOL_VERBS = {
+_TOOL_VERBS_EN = {
     "scan_project":   "Scanning project",
     "read_file":      "Reading file",
     "list_files":     "Listing files",
@@ -218,3 +218,28 @@ TOOL_VERBS = {
     "verify_setup":   "Verifying setup",
     "prompt_choice":  "Waiting for choice",
 }
+
+_TOOL_VERBS_ZH = {
+    "scan_project":   "扫描项目",
+    "read_file":      "读取文件",
+    "list_files":     "列出文件",
+    "check_tool":     "检查工具",
+    "get_platform":   "检查平台",
+    "run_command":    "执行命令",
+    "write_env":      "写入 .env",
+    "create_venv":    "创建虚拟环境",
+    "install_deps":   "安装依赖",
+    "verify_setup":   "验证环境",
+    "prompt_choice":  "等待选择",
+}
+
+TOOL_VERBS = _TOOL_VERBS_EN  # default, overridden by set_locale()
+
+
+def set_locale(lang: str):
+    """Set UI locale. Call once at startup."""
+    global TOOL_VERBS
+    if lang == "zh":
+        TOOL_VERBS = _TOOL_VERBS_ZH
+    else:
+        TOOL_VERBS = _TOOL_VERBS_EN
