@@ -41,7 +41,7 @@ def print_banner():
         print(f"{C_CYAN}{C_BOLD}{line}{C_RESET}")
     print()
     print(f"{C_BOLD}jit{C_RESET} — AI-powered environment setup  "
-          f"{C_DIM}/skip · /o output · /reset · /quit{C_RESET}")
+          f"{C_DIM}Ctrl+C to exit{C_RESET}")
     print(f"{C_DIM}{'─' * _terminal_width()}{C_RESET}", flush=True)
     print()
 

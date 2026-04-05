@@ -7,14 +7,14 @@ from pathlib import Path
 
 from .config import load_config, get_device_id
 from .llm import call_llm, get_llm_config, to_openai_messages, ToolCall, RateLimitError
-from .tools import TOOLS_OPENAI, exec_tool, show_full_output
+from .tools import TOOLS_OPENAI, exec_tool, show_full_output, _exec_prompt_choice
 from .ui import (
-    Spinner, MarkdownStream, print_banner, show_user_bubble, TOOL_VERBS,
+    Spinner, MarkdownStream, print_banner, TOOL_VERBS,
     set_locale,
-    C_BOLD, C_DIM, C_RED, C_YELLOW, C_GREEN, C_RESET, REPL_PROMPT,
+    C_BOLD, C_DIM, C_RED, C_YELLOW, C_GREEN, C_RESET,
 )
 
-# ── System Prompt ────────────────────────────────────────────────────────────
+# ── System Prompt ───────────────────────────────────────────────────��────────
 
 _SYSTEM_PROMPT_TEMPLATE = """\
 You are jit, an AI environment setup assistant. Your job is to get this \
@@ -40,10 +40,12 @@ when possible.
 6. Run a final verification (build/test) to confirm everything works.
 7. IMPORTANT — When setup is complete:
    a. Output a brief "Ready" summary: one-line status + available commands.
-   b. Then IMMEDIATELY call prompt_choice with the available project actions \
-as options (e.g. "Run dev server: bun run dev", "Run tests: bun run test", \
-"Exit"). ALWAYS include "Exit" as the last option. \
-This lets the user pick what to do next without typing.
+   b. Then IMMEDIATELY call prompt_choice with the project's available actions \
+as options. For INTERACTIVE commands (dev server, watch mode, REPL, start), \
+prefix with "📋 " to indicate "copy to clipboard" — these should NOT be run \
+by the agent since they are long-running/interactive. For one-shot commands \
+(test, build, lint), they can be run directly. ALWAYS include "Exit" as the \
+last option.
 
 Rules:
 - Be concise. One step at a time. Don't over-explain.
@@ -57,6 +59,13 @@ the user for confirmation — just call it normally.
 - IMPORTANT: When you need user input, use the prompt_choice tool to present \
 numbered options. NEVER ask open-ended questions. The user should only need to \
 press a number or Enter, not type sentences.
+- IMPORTANT: Recognize interactive/long-running commands (dev, start, serve, \
+watch, repl, console). NEVER run these with run_command — they will hang. \
+Instead, show them in the final prompt_choice as copy-pasteable commands for \
+the user to run themselves.
+- After EVERY response where you don't call any tools, the system will \
+automatically show a default action menu. So you don't need to worry about \
+the user being stuck.
 """
 
 _ERASE_LINE = "\r\033[K"
@@ -127,6 +136,24 @@ def _clear_session(project_dir: Path):
         path.unlink()
 
 
+# ── Default Action Menu ──────────────────────────────────────────────────────
+
+def _show_default_menu(zh: bool) -> str:
+    """Show default action menu when AI doesn't provide one. Returns user choice."""
+    if zh:
+        options = ["继续", "查看上次命令输出", "重新开始", "退出"]
+    else:
+        options = ["Continue", "Show last command output", "Reset", "Exit"]
+
+    result_json = _exec_prompt_choice(
+        "下一步？" if zh else "What next?",
+        options,
+        default=1,
+    )
+    result = json.loads(result_json)
+    return result.get("selected", "")
+
+
 # ── Main Loop ────────────────────────────────────────────────────────────────
 
 
@@ -160,17 +187,18 @@ def run(project_dir: Path, auto_confirm: bool = False):
         total_in = meta.get("total_in", 0)
         total_out = meta.get("total_out", 0)
         if _zh:
-            print(f"{C_DIM}  恢复上次会话（{len(messages)} 条消息）{C_RESET}")
-            print(f"{C_DIM}  输入 /reset 重新开始{C_RESET}\n")
+            print(f"{C_DIM}  恢复上次会话（{len(messages)} 条消息）{C_RESET}\n")
         else:
-            print(f"{C_DIM}  Resuming previous session ({len(messages)} messages){C_RESET}")
-            print(f"{C_DIM}  Type /reset to start over{C_RESET}\n")
-        # Jump straight to user input — don't re-run LLM
-        resumed = True
+            print(f"{C_DIM}  Resuming previous session ({len(messages)} messages){C_RESET}\n")
+        # Tell the AI to continue where it left off
+        messages.append({
+            "role": "user",
+            "content": "Continue from where we left off. "
+                       "If setup was already complete, show the Ready summary and action choices again.",
+        })
     else:
         total_in = 0
         total_out = 0
-        resumed = False
         # Prime the conversation
         messages.append({
             "role": "user",
@@ -198,130 +226,141 @@ def run(project_dir: Path, auto_confirm: bool = False):
 
     # ── Conversation loop ────────────────────────────────────────────────────
     while True:
-        if not resumed:
-            # ── LLM turn ────────────────────────────────────────────────────
-            for _round in range(10):   # max tool-use rounds per LLM turn
-                spin = Spinner("Thinking\u2026").start()
-                text_buf = []  # collect raw text
+        # ── LLM turn ────────────────────────────────────────────────────────
+        had_prompt_choice = False
 
-                def _stream_cb(chunk, _s=spin, _b=text_buf):
-                    _b.append(chunk)
-                    # Update spinner with live thinking preview
-                    preview = "".join(_b).replace("\n", " ").strip()
-                    if preview:
-                        display = preview[-60:] if len(preview) > 60 else preview
-                        _s.update(display)
+        for _round in range(10):   # max tool-use rounds per LLM turn
+            spin = Spinner("Thinking\u2026").start()
+            text_buf = []  # collect raw text
 
+            def _stream_cb(chunk, _s=spin, _b=text_buf):
+                _b.append(chunk)
+                # Update spinner with live thinking preview
+                preview = "".join(_b).replace("\n", " ").strip()
+                if preview:
+                    display = preview[-60:] if len(preview) > 60 else preview
+                    _s.update(display)
+
+            try:
+                text, tool_calls, usage = _call(messages, stream_cb=_stream_cb)
+            except RateLimitError as e:
+                spin.fail("Rate limit")
+                print(f"\n{C_YELLOW}  {e}{C_RESET}")
+                return
+            except Exception as e:
+                spin.fail("Error")
+                print(f"\n{C_RED}  {e}{C_RESET}")
+                return
+
+            # Track tokens
+            u_in = usage.get("input_tokens", 0)
+            u_out = usage.get("output_tokens", 0)
+            total_in += u_in
+            total_out += u_out
+
+            if text and tool_calls:
+                # Mid-loop thinking — erase spinner, done
+                spin.erase()
+            elif text and not tool_calls:
+                # Final response — render with markdown
+                spin.erase()
+                md = MarkdownStream()
+                md.feed(text)
+                md.flush()
+                # Token stats
+                print(f"{C_DIM}  tokens: {_fmt(u_in)}↑ {_fmt(u_out)}↓ · total: {_fmt(total_in)}↑ {_fmt(total_out)}↓{C_RESET}")
+            else:
+                spin.erase()
+
+            # Build assistant message
+            assistant_content: list = []
+            if text:
+                assistant_content.append({"type": "text", "text": text})
+            for tc in tool_calls:
+                assistant_content.append({
+                    "type": "tool_use",
+                    "id": tc.id,
+                    "name": tc.name,
+                    "input": tc.input,
+                })
+            messages.append({
+                "role": "assistant",
+                "content": assistant_content or text or "",
+            })
+
+            if not tool_calls:
+                break   # no tools — done with LLM turn
+
+            # ── Execute tools ────────────────────────────────────────────
+            sys.stdout.write(_ERASE_LINE)
+
+            tool_result_blocks = []
+            for tc in tool_calls:
+                if tc.name == "prompt_choice":
+                    had_prompt_choice = True
+
+                verb = TOOL_VERBS.get(tc.name, tc.name)
+                ts = Spinner(f"{verb}\u2026", color=C_YELLOW).start()
+                result = exec_tool(tc.name, tc.input, project_dir, auto_confirm)
+                # Show success/fail
                 try:
-                    text, tool_calls, usage = _call(messages, stream_cb=_stream_cb)
-                except RateLimitError as e:
-                    spin.fail("Rate limit")
-                    print(f"\n{C_YELLOW}  {e}{C_RESET}")
-                    return
-                except Exception as e:
-                    spin.fail("Error")
-                    print(f"\n{C_RED}  {e}{C_RESET}")
-                    return
+                    r = json.loads(result)
+                    if r.get("success") is False or r.get("error"):
+                        ts.fail(f"{verb}")
+                    else:
+                        ts.finish(f"{verb}")
+                except (json.JSONDecodeError, AttributeError):
+                    ts.finish(f"{verb}")
 
-                # Track tokens
-                u_in = usage.get("input_tokens", 0)
-                u_out = usage.get("output_tokens", 0)
-                total_in += u_in
-                total_out += u_out
-
-                if text and tool_calls:
-                    # Mid-loop thinking — erase spinner, done
-                    spin.erase()
-                elif text and not tool_calls:
-                    # Final response — render with markdown
-                    spin.erase()
-                    md = MarkdownStream()
-                    md.feed(text)
-                    md.flush()
-                    # Token stats
-                    print(f"{C_DIM}  tokens: {_fmt(u_in)}↑ {_fmt(u_out)}↓ · total: {_fmt(total_in)}↑ {_fmt(total_out)}↓{C_RESET}")
-                else:
-                    spin.erase()
-
-                # Build assistant message
-                assistant_content: list = []
-                if text:
-                    assistant_content.append({"type": "text", "text": text})
-                for tc in tool_calls:
-                    assistant_content.append({
-                        "type": "tool_use",
-                        "id": tc.id,
-                        "name": tc.name,
-                        "input": tc.input,
-                    })
-                messages.append({
-                    "role": "assistant",
-                    "content": assistant_content or text or "",
+                tool_result_blocks.append({
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "content": result,
                 })
 
-                if not tool_calls:
-                    break   # no tools — show response, wait for user
+            # Convert to OpenAI format and append
+            oai = to_openai_messages([
+                {"role": "assistant", "content": assistant_content},
+                {"role": "user", "content": tool_result_blocks},
+            ])
+            messages[-1] = oai[0]
+            messages.extend(oai[1:])
 
-                # ── Execute tools ────────────────────────────────────────────
-                # Erase the dim thinking preview before tool spinners
-                sys.stdout.write(_ERASE_LINE)
+        # Save session after each LLM turn
+        _save_session(project_dir, messages,
+                      {"total_in": total_in, "total_out": total_out})
 
-                tool_result_blocks = []
-                for tc in tool_calls:
-                    verb = TOOL_VERBS.get(tc.name, tc.name)
-                    ts = Spinner(f"{verb}\u2026", color=C_YELLOW).start()
-                    result = exec_tool(tc.name, tc.input, project_dir, auto_confirm)
-                    # Show success/fail
-                    try:
-                        r = json.loads(result)
-                        if r.get("success") is False or r.get("error"):
-                            ts.fail(f"{verb}")
-                        else:
-                            ts.finish(f"{verb}")
-                    except (json.JSONDecodeError, AttributeError):
-                        ts.finish(f"{verb}")
+        # ── Post-turn action ───────────────────────────────────��─────────────
+        # If the AI didn't present a prompt_choice, show the default menu
+        if not had_prompt_choice:
+            choice = _show_default_menu(_zh)
+        else:
+            # AI already showed choices via prompt_choice — get the result
+            # from the last tool result (it's already in messages)
+            # Extract what the user selected
+            last_tool_result = tool_result_blocks[-1]["content"] if tool_result_blocks else "{}"
+            try:
+                choice = json.loads(last_tool_result).get("selected", "")
+            except (json.JSONDecodeError, AttributeError):
+                choice = ""
 
-                    tool_result_blocks.append({
-                        "type": "tool_result",
-                        "tool_use_id": tc.id,
-                        "content": result,
-                    })
+        # Handle the choice
+        choice_lower = choice.lower().strip()
 
-                # Convert to OpenAI format and append
-                oai = to_openai_messages([
-                    {"role": "assistant", "content": assistant_content},
-                    {"role": "user", "content": tool_result_blocks},
-                ])
-                messages[-1] = oai[0]
-                messages.extend(oai[1:])
-
-            # Save session after each LLM turn
-            _save_session(project_dir, messages,
-                          {"total_in": total_in, "total_out": total_out})
-
-        resumed = False   # only skip LLM on first loop if resumed
-
-        # ── User input ───────────────────────────────────────────────────────
-        try:
-            user_input = input(REPL_PROMPT).strip()
-        except (EOFError, KeyboardInterrupt):
-            print(f"\n{C_DIM}{'已退出。' if _zh else 'Setup exited.'}{C_RESET}")
-            break
-
-        if not user_input:
-            continue
-        if user_input in ("/quit", "/exit", "/q"):
+        if choice_lower in ("exit", "退出"):
             print(f"{C_DIM}{'已退出。' if _zh else 'Setup exited.'}{C_RESET}")
             break
-        if user_input == "/skip":
-            messages.append({"role": "user",
-                             "content": "Skip this step and move on to the next one."})
-            show_user_bubble("skip")
-            continue
-        if user_input in ("/output", "/o"):
+
+        if choice_lower in ("show last command output", "查看上次命令输出"):
             show_full_output()
-            continue
-        if user_input == "/reset":
+            # Show menu again
+            choice = _show_default_menu(_zh)
+            choice_lower = choice.lower().strip()
+            if choice_lower in ("exit", "退出"):
+                print(f"{C_DIM}{'已退出。' if _zh else 'Setup exited.'}{C_RESET}")
+                break
+
+        if choice_lower in ("reset", "重新开始"):
             _clear_session(project_dir)
             if _zh:
                 print(f"{C_DIM}会话已清除，重新运行 jit 开始。{C_RESET}")
@@ -329,7 +368,18 @@ def run(project_dir: Path, auto_confirm: bool = False):
                 print(f"{C_DIM}Session cleared. Restart jit to begin fresh.{C_RESET}")
             break
 
-        # Display user input as bubble
-        show_user_bubble(user_input)
+        # For interactive commands (prefixed with 📋), show the command and exit
+        if choice.startswith("📋"):
+            cmd = choice.replace("📋", "").strip().rstrip(":").strip()
+            # Extract just the command part after the colon if present
+            if ":" in cmd:
+                cmd = cmd.split(":", 1)[1].strip()
+            print(f"\n{C_BOLD}{'运行以下命令开始:' if _zh else 'Run this to get started:'}{C_RESET}")
+            print(f"  {C_GREEN}{cmd}{C_RESET}\n")
+            break
 
-        messages.append({"role": "user", "content": user_input})
+        # Any other choice — feed it back to the AI as user action
+        messages.append({
+            "role": "user",
+            "content": f"User selected: {choice}. Please execute this action.",
+        })
