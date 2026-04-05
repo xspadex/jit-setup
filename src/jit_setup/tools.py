@@ -265,8 +265,17 @@ def _in_venv(project_dir: Path) -> bool:
     return venv_python.exists()
 
 
-def _run_cmd(cmd: str, cwd: Path, timeout: int = 120, env: dict = None) -> dict:
-    """Execute a command and return structured result."""
+_C_DIM = "\033[2m"
+_C_RESET = "\033[0m"
+
+
+def _run_cmd(cmd: str, cwd: Path, timeout: int = 120, env: dict = None,
+             stream: bool = False) -> dict:
+    """Execute a command and return structured result.
+
+    If stream=True, output is printed to the terminal in real-time (dimmed)
+    so the user can see progress.
+    """
     merged_env = dict(os.environ)
     if env:
         merged_env.update(env)
@@ -277,27 +286,54 @@ def _run_cmd(cmd: str, cwd: Path, timeout: int = 120, env: dict = None) -> dict:
         merged_env["PATH"] = f"{venv_bin}:{merged_env.get('PATH', '')}"
         merged_env["VIRTUAL_ENV"] = str(cwd / ".venv")
 
+    if not stream:
+        # Silent mode: capture everything
+        try:
+            proc = subprocess.run(
+                cmd, shell=True, cwd=str(cwd),
+                capture_output=True, text=True,
+                timeout=timeout, env=merged_env,
+            )
+            result = {
+                "exit_code": proc.returncode,
+                "stdout": proc.stdout[-3000:] if len(proc.stdout) > 3000 else proc.stdout,
+                "stderr": proc.stderr[-2000:] if len(proc.stderr) > 2000 else proc.stderr,
+                "success": proc.returncode == 0,
+            }
+            return result
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": f"Command timed out after {timeout}s"}
+        except Exception as e:
+            return {"success": False, "error": str(e)[:500]}
+
+    # Streaming mode: show output in real-time
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
     try:
-        proc = subprocess.run(
-            cmd,
-            shell=True,
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=merged_env,
+        proc = subprocess.Popen(
+            cmd, shell=True, cwd=str(cwd),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, env=merged_env,
         )
-        result = {
+        print(f"{_C_DIM}  $ {cmd}{_C_RESET}")
+        for line in proc.stdout:
+            stripped = line.rstrip("\n")
+            stdout_lines.append(stripped)
+            # Show last meaningful lines, skip blanks
+            if stripped:
+                print(f"{_C_DIM}    {stripped}{_C_RESET}")
+            sys.stdout.flush()
+        proc.wait(timeout=timeout)
+
+        stdout_text = "\n".join(stdout_lines)
+        return {
             "exit_code": proc.returncode,
-            "stdout": proc.stdout[-3000:] if len(proc.stdout) > 3000 else proc.stdout,
-            "stderr": proc.stderr[-2000:] if len(proc.stderr) > 2000 else proc.stderr,
+            "stdout": stdout_text[-3000:] if len(stdout_text) > 3000 else stdout_text,
+            "stderr": "",
+            "success": proc.returncode == 0,
         }
-        if proc.returncode == 0:
-            result["success"] = True
-        else:
-            result["success"] = False
-        return result
     except subprocess.TimeoutExpired:
+        proc.kill()
         return {"success": False, "error": f"Command timed out after {timeout}s"}
     except Exception as e:
         return {"success": False, "error": str(e)[:500]}
@@ -380,7 +416,7 @@ def exec_tool(name: str, args: dict, project_dir: Path,
 
     if name == "verify_setup":
         cmd = args.get("command", "")
-        result = _run_cmd(cmd, project_dir, timeout=60)
+        result = _run_cmd(cmd, project_dir, timeout=60, stream=True)
         result["verification"] = True
         return json.dumps(result, ensure_ascii=False)
 
@@ -446,24 +482,26 @@ def _exec_run_command(cmd: str, project_dir: Path, timeout: int,
     if blocked:
         return json.dumps({"success": False, "error": blocked})
 
-    # Safe in-project commands: auto-execute
+    # Safe in-project commands: auto-execute with streaming
     if _is_safe_in_project(cmd):
-        result = _run_cmd(cmd, project_dir, timeout)
+        result = _run_cmd(cmd, project_dir, timeout, stream=True)
         return json.dumps(result, ensure_ascii=False)
 
     # System-level: ask user (unless --yes)
+    # Default to Y — the AI already explained what it's doing,
+    # user just needs to confirm they're OK with system changes.
     if _is_system_level(cmd) and not auto_confirm:
         print(f"\n  \033[33m\u26a0 System command:\033[0m {cmd}")
         try:
-            answer = input("  Allow? [y/N] ").strip().lower()
+            answer = input("  Allow? [Y/n] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             return json.dumps({"success": False, "skipped": True,
                                "reason": "User cancelled"})
-        if answer != "y":
+        if answer == "n":
             return json.dumps({"success": False, "skipped": True,
                                "reason": "User declined"})
 
-    result = _run_cmd(cmd, project_dir, timeout)
+    result = _run_cmd(cmd, project_dir, timeout, stream=True)
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -527,7 +565,7 @@ def _exec_create_venv(method: str, python_version: str, name: str,
             return json.dumps({"success": True, "method": "venv",
                                "path": str(venv_path),
                                "message": "Already exists, reusing"})
-        result = _run_cmd(f"python3 -m venv {venv_path}", project_dir)
+        result = _run_cmd(f"python3 -m venv {venv_path}", project_dir, stream=True)
         if result.get("success"):
             result["path"] = str(venv_path)
             result["activate"] = f"source {venv_path}/bin/activate"
@@ -542,7 +580,7 @@ def _exec_create_venv(method: str, python_version: str, name: str,
         cmd = f"uv venv {venv_path}"
         if python_version:
             cmd += f" --python {python_version}"
-        result = _run_cmd(cmd, project_dir)
+        result = _run_cmd(cmd, project_dir, stream=True)
         if result.get("success"):
             result["path"] = str(venv_path)
             result["activate"] = f"source {venv_path}/bin/activate"
@@ -562,7 +600,7 @@ def _exec_create_venv(method: str, python_version: str, name: str,
             cmd += f" python={python_version}"
         else:
             cmd += " python"
-        result = _run_cmd(cmd, project_dir, timeout=300)
+        result = _run_cmd(cmd, project_dir, timeout=300, stream=True)
         if result.get("success"):
             result["name"] = env_name
             result["activate"] = f"conda activate {env_name}"
@@ -593,7 +631,7 @@ def _exec_install_deps(manager: str, extras: str, project_dir: Path) -> str:
     if not cmd:
         return json.dumps({"error": f"Unknown package manager: {manager}"})
 
-    result = _run_cmd(cmd, project_dir, timeout=300)
+    result = _run_cmd(cmd, project_dir, timeout=300, stream=True)
     result["manager"] = manager
     result["command"] = cmd
     return json.dumps(result, ensure_ascii=False)

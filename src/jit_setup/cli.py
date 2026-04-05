@@ -41,9 +41,11 @@ def main():
 
     sub = parser.add_subparsers(dest="command")
 
-    # jit clone <url>
+    # jit clone <url> [--yes]
     clone_p = sub.add_parser("clone", help="Clone a repo and set up its environment")
     clone_p.add_argument("url", help="Git URL (GitHub, GitLab, etc.)")
+    clone_p.add_argument("--yes", "-y", action="store_true",
+                         help="Auto-confirm safe system-level operations")
 
     # jit [path]  (default subcommand — no keyword needed)
     parser.add_argument(
