@@ -16,8 +16,8 @@
 const UPSTREAM_URL = "https://api.siliconflow.cn/v1/chat/completions";
 const UPSTREAM_MODEL = "Pro/moonshotai/Kimi-K2-Instruct";
 
-const DEVICE_DAILY_LIMIT = 30;
-const IP_DAILY_LIMIT = 60;
+const DEVICE_DAILY_LIMIT = 100;
+const IP_DAILY_LIMIT = 200;
 const MAX_TOKENS_CAP = 2048;
 const SIGNATURE_MAX_AGE_SECONDS = 300; // 5 min tolerance
 
@@ -155,7 +155,7 @@ export default {
     );
     if (!deviceRL.allowed) {
       return jsonError(
-        "Daily free quota exhausted (30/day). Set your own API key for unlimited use.",
+        "Daily free quota exhausted (100/day). Set your own API key for unlimited use.",
         429,
         { remaining: 0, reset: "midnight UTC" },
       );

@@ -174,7 +174,7 @@ def run(project_dir: Path, auto_confirm: bool = False):
     _zh = lang == "zh"
 
     if llm_cfg.get("is_community"):
-        print(f"{C_DIM}  {'使用免费社区 API（每天 30 次）' if _zh else 'Using free community API (30 requests/day)'}{C_RESET}")
+        print(f"{C_DIM}  {'使用免费社区 API（每天 100 次）' if _zh else 'Using free community API (100 requests/day)'}{C_RESET}")
     else:
         print(f"{C_DIM}  {'使用自定义 LLM: ' if _zh else 'Using custom LLM: '}{llm_cfg.get('model', 'default')}{C_RESET}")
     print(f"{C_DIM}  {'项目: ' if _zh else 'Project: '}{project_dir}{C_RESET}\n")
