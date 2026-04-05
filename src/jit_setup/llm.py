@@ -104,6 +104,7 @@ def call_llm(
         "max_tokens": min(max_tokens, DEFAULT_MAX_TOKENS),
         "messages": api_messages,
         "stream": True,
+        "stream_options": {"include_usage": True},
     }
     if tools:
         body["tools"] = tools

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jit-setup"
-version = "0.3.1"
+version = "0.3.2"
 description = "AI-powered project environment setup — scan, configure, verify, done."
 license = "Apache-2.0"
 requires-python = ">=3.9"
