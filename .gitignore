@@ -16,3 +16,4 @@ venv/
 *.whl
 node_modules/
 .wrangler/
+.jit/

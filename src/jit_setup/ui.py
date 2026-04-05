@@ -1,5 +1,6 @@
 """UI components — Spinner, colors, REPL prompt, display helpers."""
 
+import re
 import sys
 import os
 import shutil
@@ -40,7 +41,7 @@ def print_banner():
         print(f"{C_CYAN}{C_BOLD}{line}{C_RESET}")
     print()
     print(f"{C_BOLD}jit{C_RESET} — AI-powered environment setup  "
-          f"{C_DIM}/skip · /o output · /quit{C_RESET}")
+          f"{C_DIM}/skip · /o output · /reset · /quit{C_RESET}")
     print(f"{C_DIM}{'─' * _terminal_width()}{C_RESET}", flush=True)
     print()
 
@@ -131,6 +132,76 @@ def print_tree(label: str, items: list[tuple[str, str]]):
         connector = "\u2514\u2500" if i == len(items) - 1 else "\u251c\u2500"
         print(f"  {C_DIM}{connector}{C_RESET} {name:<20s} {C_DIM}({desc}){C_RESET}")
     print()
+
+
+# ── Markdown → ANSI Renderer ────────────────────────────────────────────────
+
+def _render_md_line(line: str) -> str:
+    """Convert a single markdown line to ANSI-styled text."""
+    # Headings: ## text → bold
+    m = re.match(r'^(#{1,3})\s+(.*)', line)
+    if m:
+        return f"{C_BOLD}{m.group(2)}{C_RESET}"
+
+    # Horizontal rule
+    if re.match(r'^---+\s*$', line):
+        return f"{C_DIM}{'─' * min(40, _terminal_width())}{C_RESET}"
+
+    # Inline formatting within the line
+    line = _render_md_inline(line)
+    return line
+
+
+def _render_md_inline(text: str) -> str:
+    """Handle inline markdown: **bold**, `code`."""
+    # **bold** or __bold__
+    text = re.sub(r'\*\*(.+?)\*\*', rf'{C_BOLD}\1{C_RESET}', text)
+    text = re.sub(r'__(.+?)__', rf'{C_BOLD}\1{C_RESET}', text)
+    # `code`
+    text = re.sub(r'`([^`]+)`', rf'{C_CYAN}\1{C_RESET}', text)
+    return text
+
+
+class MarkdownStream:
+    """Buffers streaming LLM chunks, renders markdown line-by-line."""
+
+    def __init__(self):
+        self._buf = ""
+        self._in_code_block = False
+
+    def feed(self, chunk: str):
+        """Process a chunk of streamed text."""
+        self._buf += chunk
+
+        # Process complete lines
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            self._emit_line(line)
+
+    def flush(self):
+        """Flush remaining buffer."""
+        if self._buf:
+            self._emit_line(self._buf)
+            self._buf = ""
+
+    def _emit_line(self, line: str):
+        # Code blocks: pass through with dim styling
+        if line.startswith("```"):
+            self._in_code_block = not self._in_code_block
+            if self._in_code_block:
+                sys.stdout.write(f"{C_DIM}  ┌──\n")
+            else:
+                sys.stdout.write(f"  └──{C_RESET}\n")
+            sys.stdout.flush()
+            return
+
+        if self._in_code_block:
+            sys.stdout.write(f"{C_DIM}  │ {line}{C_RESET}\n")
+        else:
+            rendered = _render_md_line(line)
+            sys.stdout.write(rendered + "\n")
+
+        sys.stdout.flush()
 
 
 # Tool verb labels for spinner messages
