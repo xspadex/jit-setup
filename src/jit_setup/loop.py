@@ -40,13 +40,11 @@ config files, what's needed.
 when possible.
 6. Run a final verification (build/test) to confirm everything works.
 7. IMPORTANT — When setup is complete:
-   a. Output a brief "Ready" summary: one-line status + available commands.
+   a. Output a brief "Ready" summary: one-line status.
    b. Then IMMEDIATELY call prompt_choice with the project's available actions \
-as options. For INTERACTIVE commands (dev server, watch mode, REPL, start), \
-prefix with "📋 " to indicate "copy to clipboard" — these should NOT be run \
-by the agent since they are long-running/interactive. For one-shot commands \
-(test, build, lint), they can be run directly. ALWAYS include "Exit" as the \
-last option.
+as options. Each option should be the actual command, e.g. "bun run dev", \
+"npm test". ALWAYS include an exit option as the last item \
+(use "退出" if responding in Chinese, "Exit" if in English).
 
 Rules:
 - Be concise. One step at a time. Don't over-explain.
@@ -304,19 +302,20 @@ def run(project_dir: Path, auto_confirm: bool = False):
             for tc in tool_calls:
                 if tc.name == "prompt_choice":
                     had_prompt_choice = True
-
-                verb = TOOL_VERBS.get(tc.name, tc.name)
-                ts = Spinner(f"{verb}\u2026", color=C_YELLOW).start()
-                result = exec_tool(tc.name, tc.input, project_dir, auto_confirm)
-                # Show success/fail
-                try:
-                    r = json.loads(result)
-                    if r.get("success") is False or r.get("error"):
-                        ts.fail(f"{verb}")
-                    else:
+                    # No spinner for prompt_choice — the selector IS the UI
+                    result = exec_tool(tc.name, tc.input, project_dir, auto_confirm)
+                else:
+                    verb = TOOL_VERBS.get(tc.name, tc.name)
+                    ts = Spinner(f"{verb}\u2026", color=C_YELLOW).start()
+                    result = exec_tool(tc.name, tc.input, project_dir, auto_confirm)
+                    try:
+                        r = json.loads(result)
+                        if r.get("success") is False or r.get("error"):
+                            ts.fail(f"{verb}")
+                        else:
+                            ts.finish(f"{verb}")
+                    except (json.JSONDecodeError, AttributeError):
                         ts.finish(f"{verb}")
-                except (json.JSONDecodeError, AttributeError):
-                    ts.finish(f"{verb}")
 
                 tool_result_blocks.append({
                     "type": "tool_result",
@@ -374,17 +373,15 @@ def run(project_dir: Path, auto_confirm: bool = False):
                 print(f"{C_DIM}Session cleared. Restart jit to begin fresh.{C_RESET}")
             break
 
-        # For interactive commands (prefixed with 📋), show the command and exit
-        if choice.startswith("📋"):
-            cmd = choice.replace("📋", "").strip().rstrip(":").strip()
-            # Extract just the command part after the colon if present
-            if ":" in cmd:
-                cmd = cmd.split(":", 1)[1].strip()
-            print(f"\n{C_BOLD}{'运行以下命令开始:' if _zh else 'Run this to get started:'}{C_RESET}")
-            print(f"  {C_GREEN}{cmd}{C_RESET}\n")
+        # Check if this is an interactive/long-running command
+        _INTERACTIVE_KEYWORDS = ("dev", "start", "serve", "watch", "repl", "console", "storybook")
+        if any(kw in choice_lower for kw in _INTERACTIVE_KEYWORDS):
+            # Show as copy-paste command, don't run
+            print(f"\n{C_BOLD}{'运行以下命令:' if _zh else 'Run this command:'}{C_RESET}")
+            print(f"  {C_GREEN}{choice}{C_RESET}\n")
             break
 
-        # Any other choice — feed it back to the AI as user action
+        # Any other choice — feed it back to the AI to execute
         messages.append({
             "role": "user",
             "content": f"User selected: {choice}. Please execute this action.",
