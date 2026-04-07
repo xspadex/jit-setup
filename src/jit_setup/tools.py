@@ -740,36 +740,20 @@ def _list_dir(target: Path, project_root: Path, prefix: str = "",
 
 
 def _exec_prompt_choice(title: str, options: list[str], default: int = 1) -> str:
-    """Show numbered choices, return the selected option."""
+    """Interactive selector with arrow keys + number keys."""
     if not options:
         return json.dumps({"error": "No options provided"})
 
+    from .ui import select_choice
     default = max(1, min(default, len(options)))
 
-    print(f"\n  \033[1m{title}\033[0m")
-    for i, opt in enumerate(options, 1):
-        marker = "›" if i == default else " "
-        bold = "\033[1m" if i == default else ""
-        print(f"  {_C_DIM}{marker}{_C_RESET} {bold}{i}. {opt}{_C_RESET}")
-
     try:
-        raw = input(f"  \033[2mChoose [default {default}]:\033[0m ").strip()
+        selected, index = select_choice(title, options, default)
     except (EOFError, KeyboardInterrupt):
-        raw = ""
+        selected = options[default - 1]
+        index = default
 
-    if not raw:
-        choice = default
-    else:
-        try:
-            choice = int(raw)
-            if choice < 1 or choice > len(options):
-                choice = default
-        except ValueError:
-            choice = default
-
-    selected = options[choice - 1]
-    print(f"  {_C_DIM}→ {selected}{_C_RESET}")
-    return json.dumps({"selected": selected, "index": choice})
+    return json.dumps({"selected": selected, "index": index})
 
 
 def show_full_output():

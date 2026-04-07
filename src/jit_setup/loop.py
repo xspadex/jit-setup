@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -235,11 +236,16 @@ def run(project_dir: Path, auto_confirm: bool = False):
 
             def _stream_cb(chunk, _s=spin, _b=text_buf):
                 _b.append(chunk)
-                # Update spinner with live thinking preview
-                preview = "".join(_b).replace("\n", " ").strip()
-                if preview:
-                    display = preview[-60:] if len(preview) > 60 else preview
-                    _s.update(display)
+                # Show last complete sentence/line as thinking preview
+                full = "".join(_b)
+                # Split by newlines or sentence-ending punctuation
+                lines = [l.strip() for l in full.replace("\n", ". ").split(". ") if l.strip()]
+                if lines:
+                    last = lines[-1]
+                    # Clean up markdown artifacts
+                    last = re.sub(r'[#*`]', '', last).strip()
+                    if last:
+                        _s.update(last)
 
             try:
                 text, tool_calls, usage = _call(messages, stream_cb=_stream_cb)

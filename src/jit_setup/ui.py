@@ -20,6 +20,8 @@ C_MAGENTA = "\033[35m"
 _USER_BG = "\033[48;5;241m"   # grey background
 _USER_FG = "\033[38;5;255m"   # near-white text
 _ERASE_LINE = "\r\033[K"
+_HIDE_CURSOR = "\033[?25l"
+_SHOW_CURSOR = "\033[?25h"
 
 REPL_PROMPT = "\u203a "       # › (matches Claude Code style)
 
@@ -55,12 +57,13 @@ def _terminal_width() -> int:
 
 # ── Spinner ──────────────────────────────────────────────────────────────────
 
+_BRAILLE_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
 class Spinner:
-    """Pulsing dot spinner with configurable color."""
+    """Braille spinner with live thinking text."""
 
-    DOT = "\u23fa"   # ⏺
-
-    def __init__(self, label: str, color: str = C_GREEN):
+    def __init__(self, label: str, color: str = C_DIM):
         self._label = label
         self._color = color
         self._phase = 0
@@ -68,46 +71,164 @@ class Spinner:
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self):
+        sys.stdout.write(_HIDE_CURSOR)
         self._thread.start()
         return self
 
     def update(self, label: str):
         self._label = label
 
-    def _dot(self) -> str:
-        if self._phase % 2 == 0:
-            return f"{self._color}{self.DOT}{C_RESET}"
-        return f"\033[2m{self._color}{self.DOT}{C_RESET}"
+    def _frame(self) -> str:
+        ch = _BRAILLE_FRAMES[self._phase % len(_BRAILLE_FRAMES)]
+        return f"{self._color}{ch}{C_RESET}"
+
+    def _render(self):
+        # Truncate label to fit terminal width
+        max_w = _terminal_width() - 4
+        label = self._label
+        if len(label) > max_w:
+            label = label[:max_w - 1] + "…"
+        sys.stdout.write(f"{_ERASE_LINE}  {self._frame()} {C_DIM}{label}{C_RESET}")
+        sys.stdout.flush()
 
     def _run(self):
-        sys.stdout.write(f"{_ERASE_LINE}{self._dot()} {self._label}")
-        sys.stdout.flush()
-        while not self._stop_evt.wait(0.4):
+        self._render()
+        while not self._stop_evt.wait(0.08):
             self._phase += 1
-            sys.stdout.write(f"{_ERASE_LINE}{self._dot()} {self._label}")
-            sys.stdout.flush()
+            self._render()
 
     def _join(self):
         self._stop_evt.set()
         self._thread.join(timeout=0.5)
-        sys.stdout.write(_ERASE_LINE)
+        sys.stdout.write(f"{_ERASE_LINE}{_SHOW_CURSOR}")
         sys.stdout.flush()
 
     def finish(self, label: str = None):
-        """Stop with green dot (success)."""
+        """Stop with green checkmark."""
         self._join()
-        print(f"{C_GREEN}{self.DOT}{C_RESET} {label or self._label}")
+        print(f"  {C_GREEN}✓{C_RESET} {label or self._label}")
         sys.stdout.flush()
 
     def fail(self, label: str = None):
-        """Stop with red dot (error)."""
+        """Stop with red cross."""
         self._join()
-        print(f"{C_RED}{self.DOT}{C_RESET} {label or self._label}")
+        print(f"  {C_RED}✗{C_RESET} {label or self._label}")
         sys.stdout.flush()
 
     def erase(self):
         """Stop and clear the line."""
         self._join()
+
+
+# ── Interactive Choice Selector ──────────────────────────────────────────────
+
+def _getch() -> str:
+    """Read a single keypress. Returns 'UP', 'DOWN', 'ENTER', or the character."""
+    import tty
+    import termios
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+
+        if ch == "\r" or ch == "\n":
+            return "ENTER"
+        if ch == "\x03":  # Ctrl+C
+            return "CTRL_C"
+        if ch == "\x1b":  # escape sequence
+            ch2 = sys.stdin.read(1)
+            if ch2 == "[":
+                ch3 = sys.stdin.read(1)
+                if ch3 == "A":
+                    return "UP"
+                if ch3 == "B":
+                    return "DOWN"
+            return "ESC"
+
+        return ch
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def select_choice(title: str, options: list[str], default: int = 1) -> tuple[str, int]:
+    """Interactive selector with arrow keys + number keys.
+
+    Returns (selected_text, 1-based_index).
+    """
+    if not options:
+        return ("", 0)
+
+    current = max(0, min(default - 1, len(options) - 1))
+    n = len(options)
+
+    def _render():
+        # Move cursor up to overwrite previous render
+        sys.stdout.write(_HIDE_CURSOR)
+        for i, opt in enumerate(options):
+            if i == current:
+                sys.stdout.write(f"  {C_CYAN}›{C_RESET} {C_BOLD}{i + 1}. {opt}{C_RESET}\n")
+            else:
+                sys.stdout.write(f"    {C_DIM}{i + 1}. {opt}{C_RESET}\n")
+        sys.stdout.write(f"\n  {C_DIM}↑↓ {'选择' if _is_zh() else 'select'} · Enter {'确认' if _is_zh() else 'confirm'}{C_RESET}")
+        sys.stdout.flush()
+
+    # Print title
+    print(f"\n  {C_BOLD}{title}{C_RESET}\n")
+
+    # Initial render
+    _render()
+
+    # Total lines rendered: n options + 1 blank + 1 hint = n + 2
+    total_lines = n + 2
+
+    while True:
+        key = _getch()
+
+        if key == "CTRL_C":
+            # Move below rendered content, show cursor
+            sys.stdout.write(f"\n{_SHOW_CURSOR}")
+            raise KeyboardInterrupt
+
+        if key == "UP":
+            current = (current - 1) % n
+        elif key == "DOWN":
+            current = (current + 1) % n
+        elif key == "ENTER":
+            break
+        elif key.isdigit():
+            idx = int(key)
+            if 1 <= idx <= n:
+                current = idx - 1
+                break
+        else:
+            continue
+
+        # Move cursor up to re-render
+        sys.stdout.write(f"\033[{total_lines}A\r")
+        _render()
+
+    # Clear the selector UI
+    # Move up to start of options and clear each line
+    sys.stdout.write(f"\033[{total_lines}A\r")
+    for _ in range(total_lines):
+        sys.stdout.write(f"{_ERASE_LINE}\n")
+    # Move back up
+    sys.stdout.write(f"\033[{total_lines}A\r")
+
+    # Show selected result
+    selected = options[current]
+    print(f"  {C_GREEN}›{C_RESET} {selected}")
+    sys.stdout.write(_SHOW_CURSOR)
+    sys.stdout.flush()
+
+    return (selected, current + 1)
+
+
+def _is_zh() -> bool:
+    """Quick check if current locale is Chinese."""
+    return TOOL_VERBS is _TOOL_VERBS_ZH
 
 
 # ── Display Helpers ──────────────────────────────────────────────────────────
