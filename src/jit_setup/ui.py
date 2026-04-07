@@ -162,32 +162,34 @@ def select_choice(title: str, options: list[str], default: int = 1) -> tuple[str
 
     current = max(0, min(default - 1, len(options) - 1))
     n = len(options)
+    zh = _is_zh()
+    hint = f"↑↓ {'选择' if zh else 'select'} · Enter {'确认' if zh else 'confirm'}"
 
-    def _render():
-        # Move cursor up to overwrite previous render
+    # Total lines: options + 1 empty + 1 hint
+    total_lines = n + 2
+
+    def _render(first: bool = False):
+        if not first:
+            # Move cursor back up to overwrite
+            sys.stdout.write(f"\033[{total_lines}A")
         sys.stdout.write(_HIDE_CURSOR)
         for i, opt in enumerate(options):
             if i == current:
-                sys.stdout.write(f"  {C_CYAN}›{C_RESET} {C_BOLD}{i + 1}. {opt}{C_RESET}\n")
+                sys.stdout.write(f"{_ERASE_LINE}  {C_CYAN}›{C_RESET} {C_BOLD}{i + 1}. {opt}{C_RESET}\n")
             else:
-                sys.stdout.write(f"    {C_DIM}{i + 1}. {opt}{C_RESET}\n")
-        sys.stdout.write(f"\n  {C_DIM}↑↓ {'选择' if _is_zh() else 'select'} · Enter {'确认' if _is_zh() else 'confirm'}{C_RESET}")
+                sys.stdout.write(f"{_ERASE_LINE}    {C_DIM}{i + 1}. {opt}{C_RESET}\n")
+        sys.stdout.write(f"{_ERASE_LINE}\n")
+        sys.stdout.write(f"{_ERASE_LINE}  {C_DIM}{hint}{C_RESET}")
         sys.stdout.flush()
 
-    # Print title
+    # Print title + initial render
     print(f"\n  {C_BOLD}{title}{C_RESET}\n")
-
-    # Initial render
-    _render()
-
-    # Total lines rendered: n options + 1 blank + 1 hint = n + 2
-    total_lines = n + 2
+    _render(first=True)
 
     while True:
         key = _getch()
 
         if key == "CTRL_C":
-            # Move below rendered content, show cursor
             sys.stdout.write(f"\n{_SHOW_CURSOR}")
             raise KeyboardInterrupt
 
@@ -205,17 +207,13 @@ def select_choice(title: str, options: list[str], default: int = 1) -> tuple[str
         else:
             continue
 
-        # Move cursor up to re-render
-        sys.stdout.write(f"\033[{total_lines}A\r")
         _render()
 
-    # Clear the selector UI
-    # Move up to start of options and clear each line
-    sys.stdout.write(f"\033[{total_lines}A\r")
+    # Clear the selector UI: move up, erase all lines
+    sys.stdout.write(f"\033[{total_lines}A")
     for _ in range(total_lines):
         sys.stdout.write(f"{_ERASE_LINE}\n")
-    # Move back up
-    sys.stdout.write(f"\033[{total_lines}A\r")
+    sys.stdout.write(f"\033[{total_lines}A")
 
     # Show selected result
     selected = options[current]
